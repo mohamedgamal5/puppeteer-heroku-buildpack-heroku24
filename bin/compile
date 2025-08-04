@@ -96,7 +96,7 @@ topic "Installing Chrome via Puppeteer"
 export PUPPETEER_CACHE_DIR="$BUILD_DIR/.cache/puppeteer"
 mkdir -p $PUPPETEER_CACHE_DIR
 cd $LP_DIR
-npx puppeteer browsers install chrome@138.0.7204.168 --path $PUPPETEER_CACHE_DIR
+node -e "require('puppeteer').createBrowserFetcher().download('$CHROME_REVISION')"
 
 # Extract Chrome path for export
 CHROME_PATH="$PUPPETEER_CACHE_DIR/chrome/linux-138.0.7204.168/chrome-linux64/chrome"
