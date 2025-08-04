@@ -71,7 +71,7 @@ PACKAGES="
   libatk1.0-0
   libgbm1
   libgtk-3-0t64
-  libnspr4t64
+  libnspr4
   libnss3t64
   libx11-xcb1
   libxcomposite1
