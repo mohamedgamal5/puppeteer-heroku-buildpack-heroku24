@@ -32,12 +32,28 @@ function indent() {
   esac
 }
 
-# Store current Heroku stack in cache to detect changes
+# Store which STACK we are running on in the cache to bust the cache if it changes
+if [ -f $CACHE_DIR/.apt/STACK ]; then
+  CACHED_STACK=$(cat "$CACHE_DIR/.apt/STACK")
+else
+  CACHED_STACK=$STACK
+fi
+
+# Ensure we store the STACK in the cache for next time.
 mkdir -p "$CACHE_DIR/.apt"
 echo "$STACK" > "$CACHE_DIR/.apt/STACK"
 
 APT_CACHE_DIR="$CACHE_DIR/apt/cache"
 APT_STATE_DIR="$CACHE_DIR/apt/state"
+
+if [ $CACHED_STACK == $STACK ]; then
+  # STACK has not changed
+  topic "Reusing cache"
+else
+  # STACK changed
+  topic "Detected Stack changes, flushing cache"
+  rm -rf $APT_CACHE_DIR
+fi
 
 mkdir -p "$APT_CACHE_DIR/archives/partial"
 mkdir -p "$APT_STATE_DIR/lists/partial"
@@ -77,8 +93,16 @@ topic "Updating apt caches"
 apt-get $APT_OPTIONS update | indent
 
 for PACKAGE in $PACKAGES; do
-  topic "Fetching .debs for $PACKAGE"
-  apt-get $APT_OPTIONS -y $APT_FLAGS -d install --reinstall $PACKAGE | indent
+  if [[ $PACKAGE == *deb ]]; then
+    PACKAGE_NAME=$(basename $PACKAGE .deb)
+    PACKAGE_FILE=$APT_CACHE_DIR/archives/$PACKAGE_NAME.deb
+
+    topic "Fetching $PACKAGE"
+    curl -s -L -z $PACKAGE_FILE -o $PACKAGE_FILE $PACKAGE 2>&1 | indent
+  else
+    topic "Fetching .debs for $PACKAGE"
+    apt-get $APT_OPTIONS -y $APT_FLAGS -d install --reinstall $PACKAGE | indent
+  fi
 done
 
 mkdir -p $BUILD_DIR/.apt
@@ -88,22 +112,9 @@ for DEB in $(ls -1 $APT_CACHE_DIR/archives/*.deb); do
   dpkg -x $DEB $BUILD_DIR/.apt/
 done
 
-topic "Installing fonts"
-mkdir -p $BUILD_DIR/.fonts
-cp $FONTS_DIR/* $BUILD_DIR/.fonts/ || true
-
-topic "Installing Chrome via Puppeteer"
-export PUPPETEER_CACHE_DIR="$BUILD_DIR/.cache/puppeteer"
-mkdir -p $PUPPETEER_CACHE_DIR
-cd $LP_DIR
-node -e "require('puppeteer').createBrowserFetcher().download('$CHROME_REVISION')"
-
-# Extract Chrome path for export
-CHROME_PATH="$PUPPETEER_CACHE_DIR/chrome/linux-138.0.7204.168/chrome-linux64/chrome"
-
 topic "Writing profile script"
 mkdir -p $BUILD_DIR/.profile.d
-cat <<EOF > $BUILD_DIR/.profile.d/puppeteer.sh
+cat <<EOF >$BUILD_DIR/.profile.d/puppeteer.sh
 export PATH="\$HOME/.apt/usr/bin:\$PATH"
 export LD_LIBRARY_PATH="\$HOME/.apt/usr/lib/x86_64-linux-gnu:\$HOME/.apt/usr/lib/i386-linux-gnu:\$HOME/.apt/usr/lib:\$LD_LIBRARY_PATH"
 export LIBRARY_PATH="\$HOME/.apt/usr/lib/x86_64-linux-gnu:\$HOME/.apt/usr/lib/i386-linux-gnu:\$HOME/.apt/usr/lib:\$LIBRARY_PATH"
@@ -111,19 +122,26 @@ export INCLUDE_PATH="\$HOME/.apt/usr/include:\$HOME/.apt/usr/include/x86_64-linu
 export CPATH="\$INCLUDE_PATH"
 export CPPPATH="\$INCLUDE_PATH"
 export PKG_CONFIG_PATH="\$HOME/.apt/usr/lib/x86_64-linux-gnu/pkgconfig:\$HOME/.apt/usr/lib/i386-linux-gnu/pkgconfig:\$HOME/.apt/usr/lib/pkgconfig:\$PKG_CONFIG_PATH"
-export CHROME_BIN="$CHROME_PATH"
-export PUPPETEER_EXECUTABLE_PATH="$CHROME_PATH"
 EOF
 
-# Export for other buildpacks
-export CHROME_BIN="$CHROME_PATH"
-export PUPPETEER_EXECUTABLE_PATH="$CHROME_PATH"
 export PATH="$BUILD_DIR/.apt/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$BUILD_DIR/.apt/usr/lib/x86_64-linux-gnu:$BUILD_DIR/.apt/usr/lib/i386-linux-gnu:$BUILD_DIR/.apt/usr/lib:$LD_LIBRARY_PATH"
+export LIBRARY_PATH="$BUILD_DIR/.apt/usr/lib/x86_64-linux-gnu:$BUILD_DIR/.apt/usr/lib/i386-linux-gnu:$BUILD_DIR/.apt/usr/lib:$LIBRARY_PATH"
+export INCLUDE_PATH="$BUILD_DIR/.apt/usr/include:$BUILD_DIR/.apt/usr/include/x86_64-linux-gnu:$INCLUDE_PATH"
+export CPATH="$INCLUDE_PATH"
+export CPPPATH="$INCLUDE_PATH"
+export PKG_CONFIG_PATH="$BUILD_DIR/.apt/usr/lib/x86_64-linux-gnu/pkgconfig:$BUILD_DIR/.apt/usr/lib/i386-linux-gnu/pkgconfig:$BUILD_DIR/.apt/usr/lib/pkgconfig:$PKG_CONFIG_PATH"
 
-export | grep -E -e ' (CHROME_BIN|PUPPETEER_EXECUTABLE_PATH|LD_LIBRARY_PATH|LIBRARY_PATH|INCLUDE_PATH|CPATH|CPPPATH|PKG_CONFIG_PATH)=' > "$LP_DIR/export"
+#give environment to later buildpacks
+export | grep -E -e ' (LD_LIBRARY_PATH|LIBRARY_PATH|INCLUDE_PATH|CPATH|CPPPATH|PKG_CONFIG_PATH)='  > "$LP_DIR/export"
 
-topic "Rewriting pkgconfig paths"
+topic "Rewrite package-config files"
 find $BUILD_DIR/.apt -type f -ipath '*/pkgconfig/*.pc' | xargs --no-run-if-empty -n 1 sed -i -e 's!^prefix=\(.*\)$!prefix='"$BUILD_DIR"'/.apt\1!g'
+#remove chrome, we use the one in pupeeteer
+rm -rf $BUILD_DIR/.apt/opt/google
 
-topic "Buildpack compile complete ✅"
+topic "Installing fonts"
+mkdir -p $BUILD_DIR/.fonts
+ls $FONTS_DIR
+cp $FONTS_DIR/* $BUILD_DIR/.fonts/
+#fc-cache -f $BUILD_DIR/.fonts
